@@ -33,6 +33,13 @@ from fairseq.file_io import PathManager
 from fairseq.logging import meters, metrics, progress_bar
 from fairseq.model_parallel.megatron_trainer import MegatronTrainer
 from fairseq.trainer import Trainer
+
+import poptorch
+from poptorch.optim import AdamW, LAMB
+from poptorch import trainingModel, DataLoader, inferenceModel
+from poptorch.enums import DataLoaderMode
+from ipu_config import get_options
+
 from omegaconf import DictConfig, OmegaConf
 
 
@@ -46,6 +53,8 @@ logger = logging.getLogger("fairseq_cli.train")
 
 
 def main(cfg: FairseqConfig) -> None:
+    opts = get_options(cfg.model, train=True)
+
     if isinstance(cfg, argparse.Namespace):
         cfg = convert_namespace_to_omegaconf(cfg)
 
@@ -137,6 +146,8 @@ def main(cfg: FairseqConfig) -> None:
         trainer = Trainer(cfg, task, model, criterion, quantizer)
     else:
         trainer = MegatronTrainer(cfg, task, model, criterion)
+    trainer.optimizer.optimizer = AdamW(model.parameters(), lr=cfg.lr_scheduler.lr[0], weight_decay=cfg.optimizer.weight_decay, eps=cfg.optimizer.adam_eps)
+    trainer._optimizer = trainer.optimizer
     logger.info(
         "training on {} devices (GPUs/TPUs)".format(
             cfg.distributed_training.distributed_world_size
@@ -153,6 +164,7 @@ def main(cfg: FairseqConfig) -> None:
     # corresponding train iterator
     extra_state, epoch_itr = checkpoint_utils.load_checkpoint(
         cfg.checkpoint,
+        opts,
         trainer,
         # don't cache epoch iterators for sharded datasets
         disable_iterator_cache=task.has_sharded_data("train"),
@@ -163,9 +175,20 @@ def main(cfg: FairseqConfig) -> None:
 
     max_epoch = cfg.optimization.max_epoch or math.inf
     lr = trainer.get_lr()
+    paradict0 = {}
+    paradict1 = {}
+    namelist = []
+    paradict = model.state_dict()
+    for name in paradict:
+        if len(paradict0)>250:
+            paradict1[name] = paradict[name]
+        else:
+            paradict0[name] = paradict[name]
+        namelist.append(name)
 
     train_meter = meters.StopwatchMeter()
     train_meter.start()
+
     while epoch_itr.next_epoch_idx <= max_epoch:
         if lr <= cfg.optimization.stop_min_lr:
             logger.info(
@@ -176,7 +199,7 @@ def main(cfg: FairseqConfig) -> None:
             break
 
         # train for one epoch
-        valid_losses, should_stop = train(cfg, trainer, task, epoch_itr)
+        valid_losses, should_stop = train(cfg, opts, trainer, task, epoch_itr)
         if should_stop:
             break
 
@@ -233,7 +256,7 @@ def should_stop_early(cfg: DictConfig, valid_loss: float) -> bool:
 
 @metrics.aggregate("train")
 def train(
-    cfg: DictConfig, trainer: Trainer, task: tasks.FairseqTask, epoch_itr
+    cfg: DictConfig, opts, trainer: Trainer, task: tasks.FairseqTask, epoch_itr
 ) -> Tuple[List[Optional[float]], bool]:
     """Train the model for one epoch and return validation losses."""
     # Initialize data iterator
@@ -283,11 +306,21 @@ def train(
     should_stop = False
     num_updates = trainer.get_num_updates()
     logger.info("Start iterating over samples")
+    sign_compile = True
     for i, samples in enumerate(progress):
         with metrics.aggregate("train_inner"), torch.autograd.profiler.record_function(
             "train_step-%d" % i
         ):
-            log_output = trainer.train_step(samples)
+            # if sign_compile:
+            #     print("---------- Compilation Started ---------")
+            #     start_compile = time.perf_counter()
+            #     self.poptorch_model.compile(
+            #         feats, boxes, input_ids, input_mask, segment_ids, label)
+            #     duration_compilation = time.perf_counter() - start_compile
+            #     print(f"Compiled model in {duration_compilation} secs")
+            #     print("---------------------------------------")
+
+            log_output = trainer.train_step(samples, opts=opts)
 
         if log_output is not None:  # not OOM, overflow, ...
             # log mid-epoch stats
@@ -489,10 +522,40 @@ def get_valid_stats(
 def cli_main(
     modify_parser: Optional[Callable[[argparse.ArgumentParser], None]] = None
 ) -> None:
-    parser = options.get_training_parser()
-    args = options.parse_args_and_arch(parser, modify_parser=modify_parser)
+    parser = options.get_training_parser() # <class 'argparse.ArgumentParser'>
+    # ipu
+    parser.add_argument("--ipus_per_replica",
+                        dest='ipus_per_replica', default=4)
+    parser.add_argument("--matmul_proportion", type=float, nargs="+",default=  [0.2, 0.2, 0.2, 0.2],
+                        help="Relative IPU memory proportion size allocated for matmul")
+    parser.add_argument("--gradient_accumulation",
+                        dest='gradient_accumulation', default=1)
+    parser.add_argument("--batches_per_step",
+                        dest='batches_per_step', type=float, default=1)
+    parser.add_argument("--steps_per_logs",
+                        dest='steps_per_logs', type=float, default=100)
+    parser.add_argument("--replication_factor",
+                        dest='replication_factor', default=1)
+    parser.add_argument("--compile_only", action='store_const',
+                        default=False, const=True)
+    parser.add_argument("--synthetic_data",
+                        action='store_const', default=False, const=True)
+    parser.add_argument("--enable_half_partials",
+                        action='store_const', default=False, const=True)
+    parser.add_argument("--OffChipStorage",
+                        action='store_const', default=False, const=True)
+    parser.add_argument("--OffRTS",
+                        action='store_const', default=False, const=True)
+    parser.add_argument("--OffSR", action='store_const',
+                        default=False, const=True)
+    parser.add_argument("--InferencedeviceIteratinos",
+                        dest='InferencedeviceIteration', default=5)
+    parser.add_argument("--InferencereplicationFactor",
+                        dest='InferencereplicationFactor', default=1)
+    parser.add_argument("--anchormode", dest='anchormode', default='all')
+    args = options.parse_args_and_arch(parser, modify_parser=modify_parser) # <class 'argparse.Namespace'>
 
-    cfg = convert_namespace_to_omegaconf(args)
+    cfg = convert_namespace_to_omegaconf(args) # omegaconf.dictconfig.DictConfig
 
     if cfg.common.use_plasma_view:
         server = PlasmaStore(path=cfg.common.plasma_path)

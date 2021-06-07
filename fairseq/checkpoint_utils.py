@@ -176,7 +176,7 @@ def save_checkpoint(cfg: CheckpointConfig, trainer, epoch_itr, val_loss):
                 os.remove(old_chk)
 
 
-def load_checkpoint(cfg: CheckpointConfig, trainer, **passthrough_args):
+def load_checkpoint(cfg: CheckpointConfig, opts, trainer, **passthrough_args):
     """
     Load a checkpoint and restore the training iterator.
 
@@ -253,12 +253,12 @@ def load_checkpoint(cfg: CheckpointConfig, trainer, **passthrough_args):
     if extra_state is not None and not reset_dataloader:
         # restore iterator from checkpoint
         itr_state = extra_state["train_iterator"]
-        epoch_itr = trainer.get_train_iterator(
+        epoch_itr = trainer.get_train_iterator(opts = opts,
             epoch=itr_state["epoch"], load_dataset=True, **passthrough_args
         )
         epoch_itr.load_state_dict(itr_state)
     else:
-        epoch_itr = trainer.get_train_iterator(
+        epoch_itr = trainer.get_train_iterator(opts = opts,
             epoch=1, load_dataset=True, **passthrough_args
         )
 

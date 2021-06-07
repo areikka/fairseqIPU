@@ -26,7 +26,7 @@ from fairseq.data import (
 )
 from fairseq.data.shorten_dataset import maybe_shorten_dataset
 from fairseq.tasks import LegacyFairseqTask, register_task
-
+import pdb
 
 logger = logging.getLogger(__name__)
 
@@ -267,6 +267,8 @@ class SentencePredictionTask(LegacyFairseqTask):
             getattr(args, "classification_head_name", "sentence_classification_head"),
             num_classes=self.args.num_classes,
         )
+
+        # model.pipeline_mapping()
 
         return model
 

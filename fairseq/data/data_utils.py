@@ -12,6 +12,7 @@ import itertools
 import logging
 import re
 import warnings
+import copy
 from typing import Optional, Tuple
 
 import numpy as np
@@ -40,13 +41,14 @@ def collate_tokens(
     eos_idx=None,
     left_pad=False,
     move_eos_to_beginning=False,
-    pad_to_length=None,
+    pad_to_length=20,
     pad_to_multiple=1,
     pad_to_bsz=None,
 ):
     """Convert a list of 1d tensors into a padded 2d tensor."""
-    size = max(v.size(0) for v in values)
-    size = size if pad_to_length is None else max(size, pad_to_length)
+    # size = max(v.size(0) for v in values)
+    # size = size if pad_to_length is None else max(size, pad_to_length)
+    size = pad_to_length
     if pad_to_multiple != 1 and size % pad_to_multiple != 0:
         size = int(((size - 0.1) // pad_to_multiple + 1) * pad_to_multiple)
 
@@ -54,7 +56,7 @@ def collate_tokens(
     res = values[0].new(batch_size, size).fill_(pad_idx)
 
     def copy_tensor(src, dst):
-        assert dst.numel() == src.numel()
+        # assert dst.numel() == src.numel()
         if move_eos_to_beginning:
             if eos_idx is None:
                 # if no eos_idx is specified, then use the last token in src
@@ -63,6 +65,10 @@ def collate_tokens(
                 dst[0] = eos_idx
             dst[1:] = src[:-1]
         else:
+            if dst.numel() <= src.numel():
+                idx = copy.deepcopy(src[-2:])
+                src = src[:dst.numel()]
+                src[-2:] = idx
             dst.copy_(src)
 
     for i, v in enumerate(values):

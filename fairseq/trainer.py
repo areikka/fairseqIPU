@@ -15,6 +15,8 @@ from argparse import Namespace
 from itertools import chain
 from typing import Any, Dict, List
 
+from poptorch import trainingModel
+from poptorch.optim import AdamW
 import torch
 from fairseq import checkpoint_utils, models, optim, utils
 from fairseq.dataclass.configs import FairseqConfig
@@ -25,6 +27,13 @@ from fairseq.logging import meters, metrics
 from fairseq.nan_detector import NanDetector
 from fairseq.optim import lr_scheduler
 from omegaconf import OmegaConf
+
+from fairseq.models.bart.model import BARTModel
+from fairseq.models.transformer import TransformerEncoder, TransformerDecoder
+
+import torch.nn.functional as F
+from torch.optim.lr_scheduler import LambdaLR
+import pdb
 
 logger = logging.getLogger(__name__)
 
@@ -568,6 +577,7 @@ class Trainer(object):
 
     def get_train_iterator(
         self,
+        opts,
         epoch,
         combine=True,
         load_dataset=True,
@@ -586,6 +596,7 @@ class Trainer(object):
                 tpu=self.tpu,
             )
         batch_iterator = self.task.get_batch_iterator(
+            opts = opts,
             dataset=self.task.dataset(self.cfg.dataset.train_subset),
             max_tokens=self.cfg.dataset.max_tokens,
             max_sentences=self.cfg.dataset.batch_size,
@@ -635,6 +646,34 @@ class Trainer(object):
         )
         self.reset_dummy_batch(batch_iterator.first_batch)
         return batch_iterator
+    def get_linear_schedule_with_warmup(self, optimizer, num_warmup_steps, num_training_steps, last_epoch=-1):
+        """
+        Create a schedule with a learning rate that decreases linearly from the initial lr set in the optimizer to 0, after
+        a warmup period during which it increases linearly from 0 to the initial lr set in the optimizer.
+
+        Args:
+            optimizer (:class:`~torch.optim.Optimizer`):
+                The optimizer for which to schedule the learning rate.
+            num_warmup_steps (:obj:`int`):
+                The number of steps for the warmup phase.
+            num_training_steps (:obj:`int`):
+                The total number of training steps.
+            last_epoch (:obj:`int`, `optional`, defaults to -1):
+                The index of the last epoch when resuming training.
+
+        Return:
+            :obj:`torch.optim.lr_scheduler.LambdaLR` with the appropriate schedule.
+        """
+
+        def lr_lambda(current_step: int):
+            if current_step < num_warmup_steps:
+                return float(current_step) / float(max(1, num_warmup_steps))
+            return max(
+                0.0, float(num_training_steps - current_step) /
+                float(max(1, num_training_steps - num_warmup_steps))
+            )
+
+        return LambdaLR(optimizer, lr_lambda, last_epoch)
 
     def begin_epoch(self, epoch):
         """Called at the beginning of each epoch."""
@@ -664,15 +703,28 @@ class Trainer(object):
         self._dummy_batch = batch
 
     @metrics.aggregate("train")
-    def train_step(self, samples, raise_oom=False):
+    def train_step(self, samples, opts, raise_oom=False):
         """Do forward, backward and parameter update."""
         self._set_seed()
-        self.model.train()
-        self.criterion.train()
-        self.zero_grad()
+        self.optim = AdamW(self.model.parameters(), lr=1e-5, weight_decay=0.01, eps=1e-8)
+        # self.scheduler = self.get_linear_schedule_with_warmup(
+        #     self.optim, 20, 100)
+        src_dict, tgt_dict = self.task.source_dictionary.load('dict.txt'), self.task.target_dictionary.load('dict.txt')
+        encoder_embed_tokens = torch.nn.Embedding(50264,1024)
+        decoder_embed_tokens = torch.nn.Embedding(50264,1024)
+        encoder_embed_tokens.padding_idx = 1
+        decoder_embed_tokens.padding_idx = 1
+        encoder = TransformerEncoder(self.cfg.model, src_dict, encoder_embed_tokens)
+        decoder = TransformerDecoder(self.cfg.model, tgt_dict, decoder_embed_tokens)
+        self.mymodel = BARTModel(self.model, encoder, decoder)
+        self.poptorch_model = trainingModel(self.mymodel, opts, optimizer=self.optim)
+        # self.poptorch_model = self.mymodel
+        self.poptorch_model.train()
+        # self.criterion.train()
+        # self.poptorch_model = self.model.train()
+        # self.zero_grad()
 
         metrics.log_start_time("train_wall", priority=800, round=0)
-
         # forward and backward pass
         logging_outputs, sample_size, ooms = [], 0, 0
         for i, sample in enumerate(samples):  # delayed update loop
@@ -692,18 +744,49 @@ class Trainer(object):
                     return self.model.no_sync()
                 else:
                     return contextlib.ExitStack()  # dummy contextmanager
-
+            logits = self.poptorch_model(sample["net_input"]["src_tokens"], sample["net_input"]["src_lengths"], sample["net_input"]["prev_output_tokens"])
+            # logits = self.poptorch_model(sample["net_input"]["src_tokens"])
+            pdb.set_trace()
             try:
                 with maybe_no_sync():
                     # forward and backward
-                    loss, sample_size_i, logging_output = self.task.train_step(
-                        sample=sample,
-                        model=self.model,
-                        criterion=self.criterion,
-                        optimizer=self.optimizer,
-                        update_num=self.get_num_updates(),
-                        ignore_grad=is_dummy_batch,
-                    )
+                    # loss, sample_size_i, logging_output = self.task.train_step(
+                    #     sample=sample,
+                    #     model=self.poptorch_model,
+                    #     # criterion=self.criterion,
+                    #     optimizer=self.optimizer,
+                    #     update_num=self.get_num_updates(),
+                    #     ignore_grad=is_dummy_batch,
+                    # )
+                    logits = self.poptorch_model(sample["net_input"]["src_tokens"], sample["net_input"]["src_lengths"], sample["net_input"]["prev_output_tokens"])
+                    pdb.set_trace()
+                    # logits, _ = model(
+                    #     **sample["net_input"]
+                    #     # features_only=True,
+                    #     # classification_head_name=self.classification_head_name,
+                    # )
+                    targets = self.poptorch_model.get_targets(sample, [logits]).view(-1)
+                    sample_size = targets.numel()
+
+                    if not self.regression_target:
+                        lprobs = F.log_softmax(logits, dim=-1, dtype=torch.float32)
+                        loss = F.nll_loss(lprobs, targets, reduction="sum")
+                    else:
+                        logits = logits.view(-1).float()
+                        targets = targets.float()
+                        loss = F.mse_loss(logits, targets, reduction="sum")
+
+                    logging_output = {
+                        "loss": loss.data,
+                        "ntokens": sample["ntokens"],
+                        "nsentences": sample_size,
+                        "sample_size": sample_size,
+                    }
+                    if not self.regression_target:
+                        preds = logits.argmax(dim=1)
+                        logging_output["ncorrect"] = (preds == targets).sum()
+                    sample_size_i = sample_size
+
                     del loss
 
                 logging_outputs.append(logging_output)
@@ -1399,3 +1482,17 @@ def _set_module_by_path(module, path, value):
     for name in path[:-1]:
         module = getattr(module, name)
     setattr(module, path[-1], value)
+
+class mymodel(torch.nn.Module):
+    def __init__(self) :
+        super().__init__()
+        self.embed = torch.nn.Embedding(50265,384)
+        # self.pipeline_mapping()
+
+    # def pipeline_mapping(self):
+    #     self.embed = poptorch.BeginBlock(
+    #         self.embed, "Embedding", ipu_id=0)
+
+    def forward(self, input_ids):
+        res = self.embed(input_ids)
+        return res

@@ -11,6 +11,8 @@ import os
 import queue
 import time
 from threading import Thread
+from poptorch import DataLoader
+from poptorch.enums import DataLoaderMode
 
 import numpy as np
 import torch
@@ -267,6 +269,7 @@ class EpochBatchIterator(EpochBatchIterating):
 
     def __init__(
         self,
+        opts,
         dataset,
         collate_fn,
         batch_sampler,
@@ -280,6 +283,7 @@ class EpochBatchIterator(EpochBatchIterating):
         disable_shuffling=False,
     ):
         assert isinstance(dataset, torch.utils.data.Dataset)
+        self.opts = opts
         self.dataset = dataset
         self.collate_fn = collate_fn
         self.batch_sampler = batch_sampler
@@ -464,14 +468,34 @@ class EpochBatchIterator(EpochBatchIterating):
             os.environ["PYTHONWARNINGS"] = "ignore:semaphore_tracker:UserWarning"
 
         # Create data loader
-        itr = torch.utils.data.DataLoader(
+        # itr = torch.utils.data.DataLoader(
+        #     self.dataset,
+        #     collate_fn=self.collate_fn,
+        #     batch_sampler=batches[offset:],
+        #     num_workers=self.num_workers,
+        #     timeout=self.timeout,
+        #     pin_memory=True,
+        # )
+
+        itr = DataLoader(
+            self.opts,
             self.dataset,
+            batch_size=1,
             collate_fn=self.collate_fn,
             batch_sampler=batches[offset:],
             num_workers=self.num_workers,
             timeout=self.timeout,
             pin_memory=True,
+            drop_last=False
         )
+
+        # data_loader = DataLoader(self.opts,
+        #                      self.dataset, batch_size=4,
+        #                      shuffle=shuffle, num_workers=1,
+        #                      pin_memory=True,
+        #                      mode=DataLoaderMode.Sync
+        #                      )
+
 
         # Wrap with a BufferedIterator if needed
         if self.buffer_size > 0:

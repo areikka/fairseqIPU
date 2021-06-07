@@ -86,9 +86,20 @@ class NestedDictionaryDataset(FairseqDataset):
         sample = OrderedDict()
         for k, ds in self.defn.items():
             try:
-                sample[k] = ds.collater([s[k] for s in samples])
+                ls = [s[k] for s in samples]
+                if k == 'net_input.src_lengths':# or k == 'ntokens':
+                    length = sample['net_input.src_tokens'].size(1)
+                    for i in range(len(ls)):
+                        ls[i] = min(length, ls[i])
+                # if k == 'net_input.prev_output_tokens':
+                #     for i in range(len(ls)):
+                #         ls[i]=torch.cat((sample['net_input.src_tokens'][i][-1].unsqueeze(0),sample['net_input.src_tokens'][i][:-1]))
+                # if k == 'ntokens':
+                #     ls = str(int(sum(sample['net_input.src_lengths'])))
+                sample[k] = ds.collater(ls)
             except NotImplementedError:
                 sample[k] = default_collate([s[k] for s in samples])
+        sample['ntokens'] = int(sum(sample['net_input.src_lengths']))
         return _unflatten(sample)
 
     def num_tokens(self, index):

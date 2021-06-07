@@ -16,6 +16,9 @@ from fairseq.dataclass import FairseqDataclass
 from fairseq.dataclass.utils import gen_parser_from_dataclass
 from omegaconf import DictConfig
 
+import torch.nn.functional as F
+import time
+import pdb
 
 logger = logging.getLogger(__name__)
 
@@ -82,11 +85,12 @@ class FairseqTask(object):
     dataset_to_epoch_iter: Dict[FairseqDataset, Any]
     state: StatefulContainer = None
 
-    def __init__(self, cfg: FairseqDataclass, **kwargs):
+    def __init__(self, cfg: FairseqDataclass, opts, **kwargs):
         self.cfg = cfg
         self.datasets = dict()
         self.dataset_to_epoch_iter = dict()
         self.state = StatefulContainer()
+        self.opts = opts
 
     @classmethod
     def load_dictionary(cls, filename):
@@ -210,6 +214,7 @@ class FairseqTask(object):
 
     def get_batch_iterator(
         self,
+        opts,
         dataset,
         max_tokens=None,
         max_sentences=None,
@@ -291,6 +296,7 @@ class FairseqTask(object):
 
         # return a reusable, sharded iterator
         epoch_iter = iterators.EpochBatchIterator(
+            opts = opts,
             dataset=dataset,
             collate_fn=dataset.collater,
             batch_sampler=batch_sampler,
@@ -446,9 +452,13 @@ class FairseqTask(object):
             **extra_gen_cls_kwargs,
         )
 
+    # def train_step(
+    #     self, sample, model, criterion, optimizer, update_num, ignore_grad=False
+    # ):
     def train_step(
-        self, sample, model, criterion, optimizer, update_num, ignore_grad=False
+        self, sample, model, optimizer, update_num, ignore_grad=False
     ):
+
         """
         Do forward and backward, and return the loss as computed by *criterion*
         for the given *model* and *sample*.
@@ -469,16 +479,53 @@ class FairseqTask(object):
                   gradient
                 - logging outputs to display while training
         """
-        model.train()
+        # model.train()
         model.set_num_updates(update_num)
         with torch.autograd.profiler.record_function("forward"):
-            loss, sample_size, logging_output = criterion(model, sample)
+            logits = model(sample["net_input"]["src_tokens"], sample["net_input"]["src_lengths"], sample["net_input"]["prev_output_tokens"])
+            # logits, _ = model(
+            #     **sample["net_input"]
+            #     # features_only=True,
+            #     # classification_head_name=self.classification_head_name,
+            # )
+            targets = model.get_targets(sample, [logits]).view(-1)
+            sample_size = targets.numel()
+            self.regression_target = False
+            if not self.regression_target:
+                lprobs = F.log_softmax(logits, dim=-1, dtype=torch.float32)
+                loss = F.nll_loss(lprobs, targets, reduction="sum")
+            else:
+                logits = logits.view(-1).float()
+                targets = targets.float()
+                loss = F.mse_loss(logits, targets, reduction="sum")
+
+            logging_output = {
+                "loss": loss.data,
+                "ntokens": sample["ntokens"],
+                "nsentences": sample_size,
+                "sample_size": sample_size,
+            }
+            if not self.regression_target:
+                preds = logits.argmax(dim=1)
+                logging_output["ncorrect"] = (preds == targets).sum()
+            # loss, sample_size, logging_output = criterion(model, sample)
         if ignore_grad:
             loss *= 0
         with torch.autograd.profiler.record_function("backward"):
             optimizer.backward(loss)
         return loss, sample_size, logging_output
 
+    # def compile(self, sample, model, optimizer):
+    #     print("---------- Compilation Started ---------")
+    #     start_compile = time.perf_counter()
+    #     model.compile(
+    #         **sample["net_input"],
+    #         features_only=True,
+    #         classification_head_name='sentence_classification_head')
+    #     duration_compilation = time.perf_counter() - start_compile
+    #     print(f"Compiled model in {duration_compilation} secs")
+    #     print("---------------------------------------")
+       
     def valid_step(self, sample, model, criterion):
         model.eval()
         with torch.no_grad():

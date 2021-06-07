@@ -196,6 +196,8 @@ class Adam(torch.optim.Optimizer):
                 exp_avg, exp_avg_sq = state["exp_avg"], state["exp_avg_sq"]
                 if amsgrad:
                     max_exp_avg_sq = state["max_exp_avg_sq"]
+                if isinstance(group["betas"], str):
+                    group["betas"] = eval(group["betas"])
                 beta1, beta2 = group["betas"]
 
                 state["step"] += 1

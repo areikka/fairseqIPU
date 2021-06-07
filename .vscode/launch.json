@@ -1,0 +1,46 @@
+{
+    // 使用 IntelliSense 了解相关属性。 
+    // 悬停以查看现有属性的描述。
+    // 欲了解更多信息，请访问: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python: 当前文件",
+            "type": "python",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "args": [
+                "RTE-bin",
+                "--restore-file", "bart-large/model.pt",
+                "--max-sentences", "16",
+                "--max-tokens", "4400",
+                "--task", "sentence_prediction",
+                "--add-prev-output-tokens",
+                "--layernorm-embedding",
+                "--share-all-embeddings",
+                "--share-decoder-input-output-embed",
+                "--reset-optimizer",
+                "--reset-dataloader",
+                "--reset-meters",
+                "--required-batch-size-multiple", "1",
+                "--init-token", "0",
+                "--arch", "bart_large",
+                "--criterion", "sentence_prediction",
+                "--num-classes", "2",
+                "--dropout", "0.1",
+                "--attention-dropout", "0.1",
+                "--weight-decay", "0.01", "--optimizer", "adam", "--adam-betas", "\"(0.9, 0.98)\"", "--adam-eps", "1e-08",
+                "--clip-norm", "0.0 ",
+                "--lr-scheduler", "polynomial_decay", "--lr", "1e-05 ", "--total-num-update", "2036", "--warmup-updates", "61",
+                "--fp16", "--fp16-init-scale", "4", "--threshold-loss-scale", "1", "--fp16-scale-window", "128",
+                "--max-epoch", "10",
+                "--find-unused-parameters",
+                "--best-checkpoint-metric accuracy", "--maximize-best-checkpoint-metric"
+            
+
+
+            ]
+        }
+    ]
+}

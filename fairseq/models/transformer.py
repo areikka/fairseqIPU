@@ -31,7 +31,8 @@ from fairseq.modules import (
 from fairseq.modules.checkpoint_activations import checkpoint_wrapper
 from fairseq.modules.quant_noise import quant_noise as apply_quant_noise_
 from torch import Tensor
-
+import pdb
+import time
 
 DEFAULT_MAX_SOURCE_POSITIONS = 1024
 DEFAULT_MAX_TARGET_POSITIONS = 1024
@@ -510,7 +511,6 @@ class TransformerEncoder(FairseqEncoder):
         # compute padding mask
         encoder_padding_mask = src_tokens.eq(self.padding_idx)
         has_pads = src_tokens.device.type == "xla" or encoder_padding_mask.any()
-
         x, encoder_embedding = self.forward_embedding(src_tokens, token_embeddings)
 
         # account for padding while computing the representation
@@ -525,17 +525,17 @@ class TransformerEncoder(FairseqEncoder):
         if return_all_hiddens:
             encoder_states.append(x)
 
-        # encoder layers
-        for layer in self.layers:
-            x = layer(
-                x, encoder_padding_mask=encoder_padding_mask if has_pads else None
-            )
-            if return_all_hiddens:
-                assert encoder_states is not None
-                encoder_states.append(x)
+        # # encoder layers
+        # for layer in self.layers:
+        #     x = layer(
+        #         x, encoder_padding_mask=encoder_padding_mask if has_pads else None
+        #     )
+        #     if return_all_hiddens:
+        #         assert encoder_states is not None
+        #         encoder_states.append(x)
 
-        if self.layer_norm is not None:
-            x = self.layer_norm(x)
+        # if self.layer_norm is not None:
+        #     x = self.layer_norm(x)
 
         # The Pytorch Mobile lite interpreter does not supports returning NamedTuple in
         # `forward` so we use a dictionary instead.

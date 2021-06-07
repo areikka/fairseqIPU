@@ -12,11 +12,12 @@ import logging
 
 import torch
 import torch.nn as nn
+import poptorch
 from fairseq import utils
 from fairseq.models import register_model, register_model_architecture
 from fairseq.models.transformer import TransformerModel
 from fairseq.modules.transformer_sentence_encoder import init_bert_params
-
+import pdb
 from .hub_interface import BARTHubInterface
 
 
@@ -46,6 +47,7 @@ class BARTModel(TransformerModel):
         self.classification_heads = nn.ModuleDict()
         if hasattr(self.encoder, "dictionary"):
             self.eos: int = self.encoder.dictionary.eos()
+        # self.pipeline_mapping()
 
     @staticmethod
     def add_args(parser):
@@ -71,47 +73,96 @@ class BARTModel(TransformerModel):
     def supported_targets(self):
         return {"self"}
 
+    def pipeline_mapping(self):
+        print("---------- Device Allocation -----------")
+        print("Embedding  --> IPU 0")
+        layer_ipu = [0]*3 + [1]*7 + [2]*7 + [3]*7
+        index_offset = 0
+        self.encoder.embed_positions = poptorch.BeginBlock(
+            self.encoder.embed_positions, "Embedding0", ipu_id=0)
+        print("encoder.embed_positions --> IPU 0")
+        self.encoder.embed_tokens = poptorch.BeginBlock(
+            self.encoder.embed_tokens, "Embedding1", ipu_id=0)
+        print("encoder.embed_tokens --> IPU 0")
+        self.encoder.layernorm_embedding = poptorch.BeginBlock(
+            self.encoder.layernorm_embedding, "Embedding2", ipu_id=0)
+        print("encoder.layernorm_embedding --> IPU 0")
+        self.classification_heads['sentence_classification_head'] = poptorch.BeginBlock(
+            self.classification_heads['sentence_classification_head'], "classification", ipu_id=0)
+        print("sentence_classification_head --> IPU 0")
+        for index, layer in enumerate(self.encoder.layers):
+            ipu = layer_ipu[index+index_offset]
+            self.encoder.layers[index] = poptorch.BeginBlock(
+                layer, f"Encoder_l{index}", ipu_id=ipu)
+            print(f"Encoder_l{index}")
+            print("encoder.layer{} --> IPU {}".format(index, ipu))
+        index_offset += self.encoder.num_layers
+        for index, layer in enumerate(self.decoder.layers):
+            ipu = layer_ipu[index+index_offset]
+            self.decoder.layers[index] = poptorch.BeginBlock(
+                layer, f"Decoder_l{index}", ipu_id=ipu)
+            print(f"Decoder_l{index}")
+            print("decoder.layer{} --> IPU {}".format(index, ipu))
+        index_offset += self.encoder.num_layers
+
+        # print("calcu_loss     --> IPU 0")
+        # self.calcu_loss = poptorch.BeginBlock(
+        #     self.calcu_loss, f"calcu_loss", ipu_id=1)
+        # print("---------------------------------------")
+
     def forward(
         self,
         src_tokens,
         src_lengths,
         prev_output_tokens,
-        features_only: bool = False,
-        classification_head_name: Optional[str] = None,
-        token_embeddings: Optional[torch.Tensor] = None,
-        return_all_hiddens: bool = True,
-        alignment_layer: Optional[int] = None,
-        alignment_heads: Optional[int] = None,
+        # features_only: bool = True,
+        # classification_head_name: Optional[str] = None,
+        # token_embeddings: Optional[torch.Tensor] = None,
+        # return_all_hiddens: bool = True,
+        # alignment_layer: Optional[int] = None,
+        # alignment_heads: Optional[int] = None,
     ):
+        features_only = False
+        classification_head_name = None
+        token_embeddings = None
+        return_all_hiddens = True
+        alignment_layer = None
+        alignment_heads = None
+
+        classification_head_name = 'sentence_classification_head'
         if classification_head_name is not None:
             features_only = True
-
         encoder_out = self.encoder(
             src_tokens,
             src_lengths=src_lengths,
             token_embeddings=token_embeddings,
             return_all_hiddens=return_all_hiddens
         )
-        x, extra = self.decoder(
-            prev_output_tokens,
-            encoder_out=encoder_out,
-            features_only=features_only,
-            alignment_layer=alignment_layer,
-            alignment_heads=alignment_heads,
-            src_lengths=src_lengths,
-            return_all_hiddens=return_all_hiddens,
-        )
-        eos: int = self.eos
-        if classification_head_name is not None:
-            sentence_representation = x[
-                src_tokens.eq(eos), :
-            ].view(x.size(0), -1, x.size(-1))[:, -1, :]
-            for k, head in self.classification_heads.items():
-                # for torch script only supports iteration
-                if k == classification_head_name:
-                    x = head(sentence_representation)
-                    break
-        return x, extra
+        # x, extra = self.decoder(
+        #     prev_output_tokens,
+        #     encoder_out=encoder_out,
+        #     features_only=features_only,
+        #     alignment_layer=alignment_layer,
+        #     alignment_heads=alignment_heads,
+        #     src_lengths=src_lengths,
+        #     return_all_hiddens=return_all_hiddens,
+        # )
+        # eos: int = self.eos
+        # if classification_head_name is not None:
+        #     sentence_representation = x[
+        #         src_tokens.eq(eos), :
+        #     ]
+        #     for i in range(len(src_lengths)):
+        #         sentence_representation = torch.cat((sentence_representation, x[i][src_lengths[i]-1].unsqueeze(dim=0)), dim = 0)
+        #     sentence_representation = sentence_representation[-1*len(src_lengths):]
+
+        #     for k, head in self.classification_heads.items():
+        #         # for torch script only supports iteration
+        #         if k == classification_head_name:
+        #             x = head(sentence_representation)
+        #             break
+        # pdb.set_trace()
+        return encoder_out['encoder_out'][0]
 
     @classmethod
     def from_pretrained(

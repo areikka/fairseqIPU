@@ -10,6 +10,7 @@ import torch.nn.functional as F
 from fairseq import metrics, utils
 from fairseq.criterions import FairseqCriterion, register_criterion
 
+import pdb
 
 @register_criterion("sentence_prediction")
 class SentencePredictionCriterion(FairseqCriterion):
@@ -39,11 +40,12 @@ class SentencePredictionCriterion(FairseqCriterion):
             and self.classification_head_name in model.classification_heads
         ), "model must provide sentence classification head for --criterion=sentence_prediction"
 
-        logits, _ = model(
-            **sample["net_input"],
-            features_only=True,
-            classification_head_name=self.classification_head_name,
-        )
+        logits = model(sample["net_input"]["src_tokens"], sample["net_input"]["src_lengths"], sample["net_input"]["prev_output_tokens"])
+        # logits, _ = model(
+        #     **sample["net_input"]
+        #     # features_only=True,
+        #     # classification_head_name=self.classification_head_name,
+        # )
         targets = model.get_targets(sample, [logits]).view(-1)
         sample_size = targets.numel()
 
