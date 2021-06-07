@@ -268,7 +268,7 @@ class SentencePredictionTask(LegacyFairseqTask):
             num_classes=self.args.num_classes,
         )
 
-        # model.pipeline_mapping()
+        model.pipeline_mapping()
 
         return model
 

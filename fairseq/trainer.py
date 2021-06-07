@@ -706,20 +706,19 @@ class Trainer(object):
     def train_step(self, samples, opts, raise_oom=False):
         """Do forward, backward and parameter update."""
         self._set_seed()
-        self.optim = AdamW(self.model.parameters(), lr=1e-5, weight_decay=0.01, eps=1e-8)
-        # self.scheduler = self.get_linear_schedule_with_warmup(
-        #     self.optim, 20, 100)
-        src_dict, tgt_dict = self.task.source_dictionary.load('dict.txt'), self.task.target_dictionary.load('dict.txt')
-        encoder_embed_tokens = torch.nn.Embedding(50264,1024)
-        decoder_embed_tokens = torch.nn.Embedding(50264,1024)
-        encoder_embed_tokens.padding_idx = 1
-        decoder_embed_tokens.padding_idx = 1
-        encoder = TransformerEncoder(self.cfg.model, src_dict, encoder_embed_tokens)
-        decoder = TransformerDecoder(self.cfg.model, tgt_dict, decoder_embed_tokens)
-        self.mymodel = BARTModel(self.model, encoder, decoder)
-        self.poptorch_model = trainingModel(self.mymodel, opts, optimizer=self.optim)
+        # self.optim = AdamW(self.model.parameters(), lr=1e-5, weight_decay=0.01, eps=1e-8)
+        # # self.scheduler = self.get_linear_schedule_with_warmup(
+        # #     self.optim, 20, 100)
+        # src_dict, tgt_dict = self.task.source_dictionary.load('dict.txt'), self.task.target_dictionary.load('dict.txt')
+        # encoder_embed_tokens = torch.nn.Embedding(50264,1024)
+        # decoder_embed_tokens = torch.nn.Embedding(50264,1024)
+        # encoder_embed_tokens.padding_idx = 1
+        # decoder_embed_tokens.padding_idx = 1
+        # encoder = TransformerEncoder(self.cfg.model, src_dict, encoder_embed_tokens)
+        # decoder = TransformerDecoder(self.cfg.model, tgt_dict, decoder_embed_tokens)
+        # self.mymodel = BARTModel(self.model, encoder, decoder)
+        self.poptorch_model = trainingModel(self.model.train(), opts, optimizer=self.optimizer.optimizer)
         # self.poptorch_model = self.mymodel
-        self.poptorch_model.train()
         # self.criterion.train()
         # self.poptorch_model = self.model.train()
         # self.zero_grad()
@@ -744,48 +743,44 @@ class Trainer(object):
                     return self.model.no_sync()
                 else:
                     return contextlib.ExitStack()  # dummy contextmanager
-            logits = self.poptorch_model(sample["net_input"]["src_tokens"], sample["net_input"]["src_lengths"], sample["net_input"]["prev_output_tokens"])
-            # logits = self.poptorch_model(sample["net_input"]["src_tokens"])
-            pdb.set_trace()
             try:
                 with maybe_no_sync():
                     # forward and backward
-                    # loss, sample_size_i, logging_output = self.task.train_step(
-                    #     sample=sample,
-                    #     model=self.poptorch_model,
-                    #     # criterion=self.criterion,
-                    #     optimizer=self.optimizer,
-                    #     update_num=self.get_num_updates(),
-                    #     ignore_grad=is_dummy_batch,
-                    # )
-                    logits = self.poptorch_model(sample["net_input"]["src_tokens"], sample["net_input"]["src_lengths"], sample["net_input"]["prev_output_tokens"])
-                    pdb.set_trace()
+                    loss, sample_size_i, logging_output = self.task.train_step(
+                        sample=sample,
+                        model=self.poptorch_model,
+                        # criterion=self.criterion,
+                        optimizer=self.optimizer,
+                        update_num=self.get_num_updates(),
+                        ignore_grad=is_dummy_batch,
+                    )
+                    # logits = self.poptorch_model(sample["net_input"]["src_tokens"], sample["net_input"]["src_lengths"], sample["net_input"]["prev_output_tokens"])
                     # logits, _ = model(
                     #     **sample["net_input"]
                     #     # features_only=True,
                     #     # classification_head_name=self.classification_head_name,
                     # )
-                    targets = self.poptorch_model.get_targets(sample, [logits]).view(-1)
-                    sample_size = targets.numel()
+                    # targets = self.poptorch_model.get_targets(sample, [logits]).view(-1)
+                    # sample_size = targets.numel()
 
-                    if not self.regression_target:
-                        lprobs = F.log_softmax(logits, dim=-1, dtype=torch.float32)
-                        loss = F.nll_loss(lprobs, targets, reduction="sum")
-                    else:
-                        logits = logits.view(-1).float()
-                        targets = targets.float()
-                        loss = F.mse_loss(logits, targets, reduction="sum")
+                    # if not self.regression_target:
+                    #     lprobs = F.log_softmax(logits, dim=-1, dtype=torch.float32)
+                    #     loss = F.nll_loss(lprobs, targets, reduction="sum")
+                    # else:
+                    #     logits = logits.view(-1).float()
+                    #     targets = targets.float()
+                    #     loss = F.mse_loss(logits, targets, reduction="sum")
 
-                    logging_output = {
-                        "loss": loss.data,
-                        "ntokens": sample["ntokens"],
-                        "nsentences": sample_size,
-                        "sample_size": sample_size,
-                    }
-                    if not self.regression_target:
-                        preds = logits.argmax(dim=1)
-                        logging_output["ncorrect"] = (preds == targets).sum()
-                    sample_size_i = sample_size
+                    # logging_output = {
+                    #     "loss": loss.data,
+                    #     "ntokens": sample["ntokens"],
+                    #     "nsentences": sample_size,
+                    #     "sample_size": sample_size,
+                    # }
+                    # if not self.regression_target:
+                    #     preds = logits.argmax(dim=1)
+                    #     logging_output["ncorrect"] = (preds == targets).sum()
+                    # sample_size_i = sample_size
 
                     del loss
 

@@ -138,31 +138,30 @@ class BARTModel(TransformerModel):
             token_embeddings=token_embeddings,
             return_all_hiddens=return_all_hiddens
         )
-        # x, extra = self.decoder(
-        #     prev_output_tokens,
-        #     encoder_out=encoder_out,
-        #     features_only=features_only,
-        #     alignment_layer=alignment_layer,
-        #     alignment_heads=alignment_heads,
-        #     src_lengths=src_lengths,
-        #     return_all_hiddens=return_all_hiddens,
-        # )
-        # eos: int = self.eos
-        # if classification_head_name is not None:
-        #     sentence_representation = x[
-        #         src_tokens.eq(eos), :
-        #     ]
-        #     for i in range(len(src_lengths)):
-        #         sentence_representation = torch.cat((sentence_representation, x[i][src_lengths[i]-1].unsqueeze(dim=0)), dim = 0)
-        #     sentence_representation = sentence_representation[-1*len(src_lengths):]
+        x, extra = self.decoder(
+            prev_output_tokens,
+            encoder_out=encoder_out,
+            features_only=features_only,
+            alignment_layer=alignment_layer,
+            alignment_heads=alignment_heads,
+            src_lengths=src_lengths,
+            return_all_hiddens=return_all_hiddens,
+        )
+        eos: int = self.eos
+        if classification_head_name is not None:
+            sentence_representation = x[
+                src_tokens.eq(eos), :
+            ]
+            for i in range(len(src_lengths)):
+                sentence_representation = torch.cat((sentence_representation, x[i][src_lengths[i]-1].unsqueeze(dim=0)), dim = 0)
+            sentence_representation = sentence_representation[-1*len(src_lengths):]
 
-        #     for k, head in self.classification_heads.items():
-        #         # for torch script only supports iteration
-        #         if k == classification_head_name:
-        #             x = head(sentence_representation)
-        #             break
-        # pdb.set_trace()
-        return encoder_out['encoder_out'][0]
+            for k, head in self.classification_heads.items():
+                # for torch script only supports iteration
+                if k == classification_head_name:
+                    x = head(sentence_representation)
+                    break
+        return x
 
     @classmethod
     def from_pretrained(
